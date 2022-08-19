@@ -52,45 +52,56 @@ func (q *querier) Select(sortSeries bool, hints *storage.SelectHints, matchers .
 		interval = 60_000
 	}
 
+	allActivities, fetchStart := q.activityCache.Get()
+	pageSize := int64(100)
+	page := int64(1)
+	after := fetchStart.Unix()
+	params := activities.NewGetLoggedInAthleteActivitiesParamsWithContext(ctx).
+		WithDefaults().
+		WithPerPage(&pageSize).
+		WithPage(&page).
+		WithAfter(&after)
+
+	for {
+		activities, err := q.client.Activities.GetLoggedInAthleteActivities(params, q.auth)
+		if err != nil {
+			return storage.ErrSeriesSet(err)
+		}
+		if len(activities.Payload) == 0 {
+			break
+		}
+		allActivities = append(allActivities, activities.Payload...)
+		page++
+	}
+	sort.Slice(allActivities, func(i, j int) bool {
+		a := time.Time(allActivities[i].StartDate)
+		b := time.Time(allActivities[j].StartDate)
+		return a.Before(b)
+	})
+	q.activityCache.Put(allActivities)
+
 	switch metricName {
 	case "strava_activities_total":
-		allActivities, fetchStart := q.activityCache.Get()
-		pageSize := int64(100)
-		page := int64(1)
-		//before := q.maxt / 1000
-		after := fetchStart.Unix()
-		params := activities.NewGetLoggedInAthleteActivitiesParamsWithContext(ctx).
-			WithDefaults().
-			WithPerPage(&pageSize).
-			WithPage(&page).
-			//	WithBefore(&before).
-			WithAfter(&after)
-
-		for {
-			activities, err := q.client.Activities.GetLoggedInAthleteActivities(params, q.auth)
-			if err != nil {
-				return storage.ErrSeriesSet(err)
-			}
-			if len(activities.Payload) == 0 {
-				break
-			}
-			allActivities = append(allActivities, activities.Payload...)
-			page++
-		}
-		sort.Slice(allActivities, func(i, j int) bool {
-			a := time.Time(allActivities[i].StartDate)
-			b := time.Time(allActivities[j].StartDate)
-			return a.Before(b)
-		})
-		q.activityCache.Put(allActivities)
-		return newActivityCountSeriesSet(allActivities, q.mint, q.maxt, interval)
+		return newActivitySummationSeriesSet(allActivities, "strava_activities_total", activityCount, q.mint, q.maxt, interval)
 	case "strava_activity_moving_duration_seconds_total":
-		return nil
+		return newActivitySummationSeriesSet(allActivities, "strava_activity_moving_duration_seconds_total", activityMovingDuration, q.mint, q.maxt, interval)
 	case "strava_activity_elapsed_duration_seconds_total":
-		return nil
+		return newActivitySummationSeriesSet(allActivities, "strava_activity_elapsed_duration_seconds_total", activityElapsedDuration, q.mint, q.maxt, interval)
 	default:
 		return nil
 	}
+}
+
+func activityCount(activity *model.SummaryActivity) float64 {
+	return 1.0
+}
+
+func activityMovingDuration(activity *model.SummaryActivity) float64 {
+	return float64(activity.MovingTime)
+}
+
+func activityElapsedDuration(activity *model.SummaryActivity) float64 {
+	return float64(activity.ElapsedTime)
 }
 
 func (q *querier) LabelValues(name string, matchers ...*labels.Matcher) ([]string, storage.Warnings, error) {
@@ -115,23 +126,29 @@ func metricName(matchers ...*labels.Matcher) string {
 	return ""
 }
 
-type activityCountSeriesSet struct {
-	activities []*model.SummaryActivity
-	start, end time.Time
-	interval   int64
-	done       bool
+type activitySummationFn func(*model.SummaryActivity) float64
+
+type activitySummationSeriesSet struct {
+	activities  []*model.SummaryActivity
+	metricName  string
+	summationFn activitySummationFn
+	start, end  time.Time
+	interval    int64
+	done        bool
 }
 
-func newActivityCountSeriesSet(activities []*model.SummaryActivity, start, end, interval int64) storage.SeriesSet {
-	return &activityCountSeriesSet{
-		activities: activities,
-		start:      timestamp.Time(start),
-		end:        timestamp.Time(end),
-		interval:   interval,
+func newActivitySummationSeriesSet(activities []*model.SummaryActivity, metricName string, summationFn activitySummationFn, start, end, interval int64) storage.SeriesSet {
+	return &activitySummationSeriesSet{
+		activities:  activities,
+		metricName:  metricName,
+		summationFn: summationFn,
+		start:       timestamp.Time(start),
+		end:         timestamp.Time(end),
+		interval:    interval,
 	}
 }
 
-func (ss *activityCountSeriesSet) Next() bool {
+func (ss *activitySummationSeriesSet) Next() bool {
 	if ss.done {
 		return false
 	}
@@ -139,68 +156,54 @@ func (ss *activityCountSeriesSet) Next() bool {
 	return true
 }
 
-func (ss *activityCountSeriesSet) At() storage.Series {
-	/*
-		// The starting count is all rides before the start of the query.
-		activityIndex := 0
-		timestamps := []int64{}
-		values := []float64{}
-		for t := ss.start.UnixMilli(); t < ss.end.UnixMilli(); t += ss.interval {
-			timestamps = append(timestamps, t)
-
-			for _, activity := range ss.activities[activityIndex:] {
-				if time.Time(activity.StartDate).Before(timestamp.Time(t)) {
-					activityIndex++
-				} else {
-					break
-				}
-			}
-
-			values = append(values, float64(activityIndex))
-		}
-	*/
-
-	return &activityCountSeries{
-		activities: ss.activities,
-		start:      ss.start,
-		end:        ss.end,
-		interval:   ss.interval,
+func (ss *activitySummationSeriesSet) At() storage.Series {
+	return &activitySummationSeries{
+		activities:  ss.activities,
+		metricName:  ss.metricName,
+		summationFn: ss.summationFn,
+		start:       ss.start,
+		end:         ss.end,
+		interval:    ss.interval,
 	}
 }
 
-func (ss *activityCountSeriesSet) Err() error {
+func (ss *activitySummationSeriesSet) Err() error {
 	return nil
 }
 
-func (ss *activityCountSeriesSet) Warnings() storage.Warnings {
+func (ss *activitySummationSeriesSet) Warnings() storage.Warnings {
 	return nil
 }
 
-type activityCountSeries struct {
-	activities []*model.SummaryActivity
-	start, end time.Time
-	interval   int64
+type activitySummationSeries struct {
+	activities  []*model.SummaryActivity
+	metricName  string
+	summationFn activitySummationFn
+	start, end  time.Time
+	interval    int64
 }
 
-func (s *activityCountSeries) Labels() labels.Labels {
-	return labels.FromStrings("__name__", "strava_activities_total")
+func (s *activitySummationSeries) Labels() labels.Labels {
+	return labels.FromStrings("__name__", s.metricName)
 }
 
-func (s *activityCountSeries) Iterator() chunkenc.Iterator {
+func (s *activitySummationSeries) Iterator() chunkenc.Iterator {
 	return &activityCountIterator{
-		activities: s.activities,
-		start:      s.start,
-		end:        s.end,
-		interval:   s.interval,
-		t:          timestamp.FromTime(s.start),
+		activities:  s.activities,
+		summationFn: s.summationFn,
+		start:       s.start,
+		end:         s.end,
+		interval:    s.interval,
+		t:           timestamp.FromTime(s.start),
 	}
 }
 
 type activityCountIterator struct {
-	activities []*model.SummaryActivity
-	start, end time.Time
-	interval   int64
-	t          int64
+	activities  []*model.SummaryActivity
+	summationFn activitySummationFn
+	start, end  time.Time
+	interval    int64
+	t           int64
 }
 
 func (it *activityCountIterator) Seek(t int64) bool {
@@ -209,15 +212,15 @@ func (it *activityCountIterator) Seek(t int64) bool {
 }
 
 func (it *activityCountIterator) At() (int64, float64) {
-	count := 0
+	value := 0.0
 	for _, activity := range it.activities {
 		if time.Time(activity.StartDate).Before(timestamp.Time(it.t)) {
-			count++
+			value += it.summationFn(activity)
 		} else {
 			break
 		}
 	}
-	return it.t, float64(count)
+	return it.t, value
 }
 
 func (it *activityCountIterator) Next() bool {
