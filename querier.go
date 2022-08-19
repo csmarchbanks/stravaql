@@ -129,37 +129,55 @@ func metricName(matchers ...*labels.Matcher) string {
 type activitySummationFn func(*model.SummaryActivity) float64
 
 type activitySummationSeriesSet struct {
-	activities  []*model.SummaryActivity
-	metricName  string
-	summationFn activitySummationFn
-	start, end  time.Time
-	interval    int64
-	done        bool
+	activitiesByType map[string][]*model.SummaryActivity
+	sportTypes       []string
+	metricName       string
+	summationFn      activitySummationFn
+	start, end       time.Time
+	interval         int64
+
+	i int
 }
 
 func newActivitySummationSeriesSet(activities []*model.SummaryActivity, metricName string, summationFn activitySummationFn, start, end, interval int64) storage.SeriesSet {
+	activitiesByType := map[string][]*model.SummaryActivity{}
+	sportTypes := []string{}
+	for _, activity := range activities {
+		sportType := string(activity.SportType)
+		if sportType == "" {
+			sportType = string(activity.Type)
+		}
+		if activitiesByType[sportType] == nil {
+			sportTypes = append(sportTypes, sportType)
+		}
+		activitiesByType[sportType] = append(activitiesByType[sportType], activity)
+	}
+
 	return &activitySummationSeriesSet{
-		activities:  activities,
-		metricName:  metricName,
-		summationFn: summationFn,
-		start:       timestamp.Time(start),
-		end:         timestamp.Time(end),
-		interval:    interval,
+		activitiesByType: activitiesByType,
+		sportTypes:       sportTypes,
+		metricName:       metricName,
+		summationFn:      summationFn,
+		start:            timestamp.Time(start),
+		end:              timestamp.Time(end),
+		interval:         interval,
+		i:                -1,
 	}
 }
 
 func (ss *activitySummationSeriesSet) Next() bool {
-	if ss.done {
-		return false
-	}
-	ss.done = true
-	return true
+	ss.i++
+	return ss.i < len(ss.sportTypes)
 }
 
 func (ss *activitySummationSeriesSet) At() storage.Series {
+	sportType := ss.sportTypes[ss.i]
 	return &activitySummationSeries{
-		activities:  ss.activities,
-		metricName:  ss.metricName,
+		activities: ss.activitiesByType[sportType],
+		labels: labels.FromStrings(
+			"__name__", ss.metricName,
+			"sport", sportType,
+		),
 		summationFn: ss.summationFn,
 		start:       ss.start,
 		end:         ss.end,
@@ -177,14 +195,14 @@ func (ss *activitySummationSeriesSet) Warnings() storage.Warnings {
 
 type activitySummationSeries struct {
 	activities  []*model.SummaryActivity
-	metricName  string
+	labels      labels.Labels
 	summationFn activitySummationFn
 	start, end  time.Time
 	interval    int64
 }
 
 func (s *activitySummationSeries) Labels() labels.Labels {
-	return labels.FromStrings("__name__", s.metricName)
+	return s.labels
 }
 
 func (s *activitySummationSeries) Iterator() chunkenc.Iterator {
