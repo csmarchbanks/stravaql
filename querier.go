@@ -17,6 +17,12 @@ import (
 	"github.com/prometheus/prometheus/tsdb/chunkenc"
 )
 
+const (
+	activitiesMetric      = "strava_activities_total"
+	movingDurationMetric  = "strava_activity_moving_duration_seconds_total"
+	elapsedDurationMetric = "strava_activity_elapsed_duration_seconds_total"
+)
+
 type querier struct {
 	logger        log.Logger
 	ctx           context.Context
@@ -81,12 +87,12 @@ func (q *querier) Select(sortSeries bool, hints *storage.SelectHints, matchers .
 	q.activityCache.Put(allActivities)
 
 	switch metricName {
-	case "strava_activities_total":
-		return newActivitySummationSeriesSet(allActivities, "strava_activities_total", activityCount, q.mint, q.maxt, interval)
-	case "strava_activity_moving_duration_seconds_total":
-		return newActivitySummationSeriesSet(allActivities, "strava_activity_moving_duration_seconds_total", activityMovingDuration, q.mint, q.maxt, interval)
-	case "strava_activity_elapsed_duration_seconds_total":
-		return newActivitySummationSeriesSet(allActivities, "strava_activity_elapsed_duration_seconds_total", activityElapsedDuration, q.mint, q.maxt, interval)
+	case activitiesMetric:
+		return newActivitySummationSeriesSet(allActivities, activitiesMetric, activityCount, q.mint, q.maxt, interval, matchers)
+	case movingDurationMetric:
+		return newActivitySummationSeriesSet(allActivities, movingDurationMetric, activityMovingDuration, q.mint, q.maxt, interval, matchers)
+	case elapsedDurationMetric:
+		return newActivitySummationSeriesSet(allActivities, elapsedDurationMetric, activityElapsedDuration, q.mint, q.maxt, interval, matchers)
 	default:
 		return nil
 	}
@@ -105,11 +111,60 @@ func activityElapsedDuration(activity *model.SummaryActivity) float64 {
 }
 
 func (q *querier) LabelValues(name string, matchers ...*labels.Matcher) ([]string, storage.Warnings, error) {
-	return nil, nil, nil
+	switch name {
+	case "__name__":
+		return []string{activitiesMetric, movingDurationMetric, elapsedDurationMetric}, nil, nil
+	case "sport":
+		return []string{
+			string(model.SportTypeAlpineSki),
+			string(model.SportTypeBackcountrySki),
+			string(model.SportTypeCanoeing),
+			string(model.SportTypeCrossfit),
+			string(model.SportTypeEBikeRide),
+			string(model.SportTypeElliptical),
+			string(model.SportTypeEMountainBikeRide),
+			string(model.SportTypeGolf),
+			string(model.SportTypeGravelRide),
+			string(model.SportTypeHandcycle),
+			string(model.SportTypeHike),
+			string(model.SportTypeIceSkate),
+			string(model.SportTypeInlineSkate),
+			string(model.SportTypeKayaking),
+			string(model.SportTypeKitesurf),
+			string(model.SportTypeMountainBikeRide),
+			string(model.SportTypeNordicSki),
+			string(model.SportTypeRide),
+			string(model.SportTypeRockClimbing),
+			string(model.SportTypeRollerSki),
+			string(model.SportTypeRowing),
+			string(model.SportTypeRun),
+			string(model.SportTypeSail),
+			string(model.SportTypeSkateboard),
+			string(model.SportTypeSnowboard),
+			string(model.SportTypeSnowshoe),
+			string(model.SportTypeSoccer),
+			string(model.SportTypeStairStepper),
+			string(model.SportTypeStandUpPaddling),
+			string(model.SportTypeSurfing),
+			string(model.SportTypeSwim),
+			string(model.SportTypeTrailRun),
+			string(model.SportTypeVelomobile),
+			string(model.SportTypeVirtualRide),
+			string(model.SportTypeVirtualRun),
+			string(model.SportTypeWalk),
+			string(model.SportTypeWeightTraining),
+			string(model.SportTypeWheelchair),
+			string(model.SportTypeWindsurf),
+			string(model.SportTypeWorkout),
+			string(model.SportTypeYoga),
+		}, nil, nil
+	default:
+		return nil, nil, nil
+	}
 }
 
 func (q *querier) LabelNames(matchers ...*labels.Matcher) ([]string, storage.Warnings, error) {
-	return nil, nil, nil
+	return []string{"__name__", "sport"}, nil, nil
 }
 
 // Close releases the resources of the Querier.
@@ -139,17 +194,28 @@ type activitySummationSeriesSet struct {
 	i int
 }
 
-func newActivitySummationSeriesSet(activities []*model.SummaryActivity, metricName string, summationFn activitySummationFn, start, end, interval int64) storage.SeriesSet {
+func newActivitySummationSeriesSet(activities []*model.SummaryActivity, metricName string, summationFn activitySummationFn, start, end, interval int64, matchers []*labels.Matcher) storage.SeriesSet {
 	activitiesByType := map[string][]*model.SummaryActivity{}
 	sportTypes := []string{}
+
+activityLoop:
 	for _, activity := range activities {
 		sportType := string(activity.SportType)
 		if sportType == "" {
 			sportType = string(activity.Type)
 		}
+
 		if activitiesByType[sportType] == nil {
+			// Check if this sport type is not included by any matchers.
+			for _, matcher := range matchers {
+				if matcher.Name == "sport" && !matcher.Matches(sportType) {
+					continue activityLoop
+				}
+			}
+
 			sportTypes = append(sportTypes, sportType)
 		}
+
 		activitiesByType[sportType] = append(activitiesByType[sportType], activity)
 	}
 
