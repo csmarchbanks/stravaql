@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/csmarchbanks/stravaql/strava"
@@ -100,7 +101,14 @@ func (q *querier) Select(sortSeries bool, hints *storage.SelectHints, matchers .
 	})
 
 	if len(warnings) > 0 {
-		level.Warn(q.logger).Log("msg", "warnings while querying", "warnings", warnings)
+		var sb strings.Builder
+		for i, warning := range warnings {
+			sb.WriteString(warning.Error())
+			if i < len(warnings)-1 {
+				sb.WriteString(", ")
+			}
+		}
+		level.Warn(q.logger).Log("msg", "warnings while querying", "warnings", sb.String())
 	}
 
 	if err := q.activityCache.Put(allActivities); err != nil {
