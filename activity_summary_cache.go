@@ -37,8 +37,8 @@ func newActivitySummaryCache(cacheFile string) *activitySummaryCache {
 }
 
 func (c *activitySummaryCache) Put(activities []*model.SummaryActivity) error {
-	// Only cache results that are older than 4 weeks ago.
-	newestToCache := time.Now().Add(-28 * 24 * time.Hour)
+	// Only cache results that are older than 7 days ago.
+	newestToCache := time.Now().Add(-7 * 24 * time.Hour)
 
 	toCache := []*model.SummaryActivity{}
 	for _, activity := range activities {
