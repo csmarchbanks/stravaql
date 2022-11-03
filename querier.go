@@ -22,7 +22,17 @@ const (
 	activitiesMetric      = "strava_activities_total"
 	movingDurationMetric  = "strava_activity_moving_duration_seconds_total"
 	elapsedDurationMetric = "strava_activity_elapsed_duration_seconds_total"
+	distanceMetric        = "strava_activity_distance_meters_total"
+	elevationGainMetric   = "strava_activity_elevation_gain_meters_total"
 )
+
+var metrics = []string{
+	activitiesMetric,
+	movingDurationMetric,
+	elapsedDurationMetric,
+	distanceMetric,
+	elevationGainMetric,
+}
 
 type querier struct {
 	logger        log.Logger
@@ -33,9 +43,10 @@ type querier struct {
 	mint, maxt    int64
 }
 
-func newQueryable(log log.Logger, client *strava.StravaAPIV3, auth runtime.ClientAuthInfoWriter, activityCache *activitySummaryCache) storage.Queryable {
+func newQueryable(logger log.Logger, client *strava.StravaAPIV3, auth runtime.ClientAuthInfoWriter, activityCache *activitySummaryCache) storage.Queryable {
 	return storage.QueryableFunc(func(ctx context.Context, mint, maxt int64) (storage.Querier, error) {
 		return &querier{
+			logger:        logger,
 			ctx:           ctx,
 			client:        client,
 			auth:          auth,
@@ -98,13 +109,17 @@ func (q *querier) Select(sortSeries bool, hints *storage.SelectHints, matchers .
 
 	switch metricName {
 	case activitiesMetric:
-		return newActivitySummationSeriesSet(allActivities, activitiesMetric, activityCount, q.mint, q.maxt, interval, matchers, warnings)
+		return newActivitySummationSeriesSet(allActivities, metricName, activityCount, q.mint, q.maxt, interval, matchers, warnings)
 	case movingDurationMetric:
-		return newActivitySummationSeriesSet(allActivities, movingDurationMetric, activityMovingDuration, q.mint, q.maxt, interval, matchers, warnings)
+		return newActivitySummationSeriesSet(allActivities, metricName, activityMovingDuration, q.mint, q.maxt, interval, matchers, warnings)
 	case elapsedDurationMetric:
-		return newActivitySummationSeriesSet(allActivities, elapsedDurationMetric, activityElapsedDuration, q.mint, q.maxt, interval, matchers, warnings)
+		return newActivitySummationSeriesSet(allActivities, metricName, activityElapsedDuration, q.mint, q.maxt, interval, matchers, warnings)
+	case distanceMetric:
+		return newActivitySummationSeriesSet(allActivities, metricName, activityDistance, q.mint, q.maxt, interval, matchers, warnings)
+	case elevationGainMetric:
+		return newActivitySummationSeriesSet(allActivities, metricName, activityElevationGain, q.mint, q.maxt, interval, matchers, warnings)
 	default:
-		return nil
+		return storage.EmptySeriesSet()
 	}
 }
 
@@ -120,10 +135,18 @@ func activityElapsedDuration(activity *model.SummaryActivity) float64 {
 	return float64(activity.ElapsedTime)
 }
 
+func activityDistance(activity *model.SummaryActivity) float64 {
+	return float64(activity.Distance)
+}
+
+func activityElevationGain(activity *model.SummaryActivity) float64 {
+	return float64(activity.TotalElevationGain)
+}
+
 func (q *querier) LabelValues(name string, matchers ...*labels.Matcher) ([]string, storage.Warnings, error) {
 	switch name {
 	case "__name__":
-		return []string{activitiesMetric, movingDurationMetric, elapsedDurationMetric}, nil, nil
+		return metrics, nil, nil
 	case "sport":
 		return []string{
 			string(model.SportTypeAlpineSki),

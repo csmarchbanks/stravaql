@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/csmarchbanks/stravaql/strava"
+	"github.com/go-kit/log/level"
 	"github.com/go-openapi/runtime/client"
 	"github.com/gorilla/mux"
 	"gopkg.in/alecthomas/kingpin.v2"
@@ -109,7 +110,10 @@ func main() {
 	router.Path("/api/v1/series").Methods("GET", "POST", "DELETE").Handler(promRouter)
 	router.Path("/api/v1/metadata").Methods("GET").Handler(promRouter)
 
-	http.ListenAndServe(":8055", router)
+	level.Info(logger).Log("msg", "serving StravaQL on :8055")
+	if err := http.ListenAndServe(":8055", router); err != http.ErrServerClosed {
+		level.Error(logger).Log("msg", "error serving metrics", "err", err)
+	}
 }
 
 type sampleAndChunkQueryable struct {
