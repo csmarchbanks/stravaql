@@ -10,6 +10,7 @@ import (
 	"github.com/csmarchbanks/stravaql/strava/activities"
 	"github.com/csmarchbanks/stravaql/strava/model"
 	"github.com/go-kit/log"
+	"github.com/go-kit/log/level"
 	"github.com/go-openapi/runtime"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/model/timestamp"
@@ -68,10 +69,12 @@ func (q *querier) Select(sortSeries bool, hints *storage.SelectHints, matchers .
 		WithPage(&page).
 		WithAfter(&after)
 
+	var warnings storage.Warnings
 	for {
 		activities, err := q.client.Activities.GetLoggedInAthleteActivities(params, q.auth)
 		if err != nil {
-			return storage.ErrSeriesSet(err)
+			warnings = append(warnings, err)
+			break
 		}
 		if len(activities.Payload) == 0 {
 			break
@@ -84,15 +87,22 @@ func (q *querier) Select(sortSeries bool, hints *storage.SelectHints, matchers .
 		b := time.Time(allActivities[j].StartDate)
 		return a.Before(b)
 	})
-	q.activityCache.Put(allActivities)
+
+	if len(warnings) > 0 {
+		level.Warn(q.logger).Log("msg", "warnings while querying", "warnings", warnings)
+	}
+
+	if err := q.activityCache.Put(allActivities); err != nil {
+		level.Warn(q.logger).Log("msg", "error putting activities in cache", "err", err)
+	}
 
 	switch metricName {
 	case activitiesMetric:
-		return newActivitySummationSeriesSet(allActivities, activitiesMetric, activityCount, q.mint, q.maxt, interval, matchers)
+		return newActivitySummationSeriesSet(allActivities, activitiesMetric, activityCount, q.mint, q.maxt, interval, matchers, warnings)
 	case movingDurationMetric:
-		return newActivitySummationSeriesSet(allActivities, movingDurationMetric, activityMovingDuration, q.mint, q.maxt, interval, matchers)
+		return newActivitySummationSeriesSet(allActivities, movingDurationMetric, activityMovingDuration, q.mint, q.maxt, interval, matchers, warnings)
 	case elapsedDurationMetric:
-		return newActivitySummationSeriesSet(allActivities, elapsedDurationMetric, activityElapsedDuration, q.mint, q.maxt, interval, matchers)
+		return newActivitySummationSeriesSet(allActivities, elapsedDurationMetric, activityElapsedDuration, q.mint, q.maxt, interval, matchers, warnings)
 	default:
 		return nil
 	}
@@ -190,11 +200,12 @@ type activitySummationSeriesSet struct {
 	summationFn      activitySummationFn
 	start, end       time.Time
 	interval         int64
+	warnings         storage.Warnings
 
 	i int
 }
 
-func newActivitySummationSeriesSet(activities []*model.SummaryActivity, metricName string, summationFn activitySummationFn, start, end, interval int64, matchers []*labels.Matcher) storage.SeriesSet {
+func newActivitySummationSeriesSet(activities []*model.SummaryActivity, metricName string, summationFn activitySummationFn, start, end, interval int64, matchers []*labels.Matcher, warnings storage.Warnings) storage.SeriesSet {
 	activitiesByType := map[string][]*model.SummaryActivity{}
 	sportTypes := []string{}
 
@@ -228,6 +239,7 @@ activityLoop:
 		end:              timestamp.Time(end),
 		interval:         interval,
 		i:                -1,
+		warnings:         warnings,
 	}
 }
 
@@ -256,7 +268,7 @@ func (ss *activitySummationSeriesSet) Err() error {
 }
 
 func (ss *activitySummationSeriesSet) Warnings() storage.Warnings {
-	return nil
+	return ss.warnings
 }
 
 type activitySummationSeries struct {
