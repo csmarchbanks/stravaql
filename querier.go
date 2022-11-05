@@ -17,6 +17,7 @@ import (
 	"github.com/prometheus/prometheus/model/timestamp"
 	"github.com/prometheus/prometheus/storage"
 	"github.com/prometheus/prometheus/tsdb/chunkenc"
+	"github.com/prometheus/prometheus/tsdb/tsdbutil"
 )
 
 const (
@@ -315,44 +316,41 @@ func (s *activitySummationSeries) Labels() labels.Labels {
 }
 
 func (s *activitySummationSeries) Iterator() chunkenc.Iterator {
-	return &activityCountIterator{
-		activities:  s.activities,
-		summationFn: s.summationFn,
-		start:       s.start,
-		end:         s.end,
-		interval:    s.interval,
-		t:           timestamp.FromTime(s.start),
-	}
-}
-
-type activityCountIterator struct {
-	activities  []*model.SummaryActivity
-	summationFn activitySummationFn
-	start, end  time.Time
-	interval    int64
-	t           int64
-}
-
-func (it *activityCountIterator) Seek(t int64) bool {
-	it.t = t
-	return it.t < timestamp.FromTime(it.end)
-}
-
-func (it *activityCountIterator) At() (int64, float64) {
+	start := s.start.UnixMilli()
+	end := s.end.UnixMilli()
+	samples := make(tsdbutil.SampleSlice, 0, (end-start)/s.interval+1)
 	value := 0.0
-	for _, activity := range it.activities {
-		if time.Time(activity.StartDate).Before(timestamp.Time(it.t)) {
-			value += it.summationFn(activity)
-		} else {
-			break
+	i := 0
+
+	for ts := start; ts <= end; ts += s.interval {
+		for ; i < len(s.activities); i++ {
+			activity := s.activities[i]
+			if time.Time(activity.StartDate).UnixMilli() <= ts {
+				value += s.summationFn(activity)
+			} else {
+				break
+			}
 		}
+
+		samples = append(samples, newSample(ts, value))
 	}
-	return it.t, value
+
+	return storage.NewListSeriesIterator(samples)
 }
 
-func (it *activityCountIterator) Next() bool {
-	it.t += it.interval
-	return it.t < timestamp.FromTime(it.end)
+type sample struct {
+	t int64
+	v float64
 }
 
-func (it *activityCountIterator) Err() error { return nil }
+func newSample(t int64, v float64) tsdbutil.Sample {
+	return sample{t, v}
+}
+
+func (s sample) T() int64 {
+	return s.t
+}
+
+func (s sample) V() float64 {
+	return s.v
+}
