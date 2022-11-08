@@ -3,16 +3,13 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/url"
-	"os"
 	"path"
 	"time"
 
 	"github.com/csmarchbanks/stravaql/strava"
 	"github.com/go-kit/log/level"
-	"github.com/go-openapi/runtime/client"
 	"github.com/gorilla/mux"
 	"gopkg.in/alecthomas/kingpin.v2"
 
@@ -44,12 +41,7 @@ func main() {
 	logger := promlog.New(promlogConfig)
 
 	c := strava.NewHTTPClient(nil)
-	token, err := oauthToken().Token()
-	if err != nil {
-		fmt.Println("unable to get oauth token", err)
-		os.Exit(1)
-	}
-	auth := client.BearerToken(token.AccessToken)
+	tokenSource := oauthToken()
 
 	activityCache := newActivitySummaryCache(path.Join(".stravaql", "activity_cache.gob"))
 
@@ -70,7 +62,7 @@ func main() {
 
 	promapi := promv1.NewAPI(
 		promql.NewEngine(engineOpts),
-		&sampleAndChunkQueryable{newQueryable(logger, c, auth, activityCache)},
+		&sampleAndChunkQueryable{newQueryable(logger, c, tokenSource, activityCache)},
 		nil,
 		nil,
 		func(context.Context) promv1.TargetRetriever { return &emptyTargetRetriever{} },

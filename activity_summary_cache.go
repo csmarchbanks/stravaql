@@ -25,7 +25,7 @@ func newActivitySummaryCache(cacheFile string) *activitySummaryCache {
 			decoder := gob.NewDecoder(file)
 			err = decoder.Decode(&activities)
 			if err == nil {
-				decoder.Decode(&cacheEnd)
+				_ = decoder.Decode(&cacheEnd)
 			}
 		}
 	}

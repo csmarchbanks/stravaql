@@ -12,12 +12,13 @@ import (
 	"github.com/csmarchbanks/stravaql/strava/model"
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
-	"github.com/go-openapi/runtime"
+	"github.com/go-openapi/runtime/client"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/model/timestamp"
 	"github.com/prometheus/prometheus/storage"
 	"github.com/prometheus/prometheus/tsdb/chunkenc"
 	"github.com/prometheus/prometheus/tsdb/tsdbutil"
+	"golang.org/x/oauth2"
 )
 
 const (
@@ -40,18 +41,18 @@ type querier struct {
 	logger        log.Logger
 	ctx           context.Context
 	client        *strava.StravaAPIV3
-	auth          runtime.ClientAuthInfoWriter
+	tokenSource   oauth2.TokenSource
 	activityCache *activitySummaryCache
 	mint, maxt    int64
 }
 
-func newQueryable(logger log.Logger, client *strava.StravaAPIV3, auth runtime.ClientAuthInfoWriter, activityCache *activitySummaryCache) storage.Queryable {
+func newQueryable(logger log.Logger, sc *strava.StravaAPIV3, tokenSource oauth2.TokenSource, activityCache *activitySummaryCache) storage.Queryable {
 	return storage.QueryableFunc(func(ctx context.Context, mint, maxt int64) (storage.Querier, error) {
 		return &querier{
 			logger:        logger,
 			ctx:           ctx,
-			client:        client,
-			auth:          auth,
+			client:        sc,
+			tokenSource:   tokenSource,
 			activityCache: activityCache,
 			mint:          mint,
 			maxt:          maxt,
@@ -72,28 +73,35 @@ func (q *querier) Select(sortSeries bool, hints *storage.SelectHints, matchers .
 		interval = 60_000
 	}
 
-	allActivities, fetchStart := q.activityCache.Get()
-	pageSize := int64(100)
-	page := int64(1)
-	after := fetchStart.Unix()
-	params := activities.NewGetLoggedInAthleteActivitiesParamsWithContext(ctx).
-		WithDefaults().
-		WithPerPage(&pageSize).
-		WithPage(&page).
-		WithAfter(&after)
-
 	var warnings storage.Warnings
-	for {
-		activities, err := q.client.Activities.GetLoggedInAthleteActivities(params, q.auth)
-		if err != nil {
-			warnings = append(warnings, err)
-			break
+	allActivities, fetchStart := q.activityCache.Get()
+
+	token, err := q.tokenSource.Token()
+	if err != nil {
+		level.Error(q.logger).Log("msg", "unable to get oauth token", "err", err)
+		warnings = append(warnings, fmt.Errorf("unable to get oauth token: %w", err))
+	} else {
+		pageSize := int64(100)
+		page := int64(1)
+		after := fetchStart.Unix()
+		params := activities.NewGetLoggedInAthleteActivitiesParamsWithContext(ctx).
+			WithDefaults().
+			WithPerPage(&pageSize).
+			WithPage(&page).
+			WithAfter(&after)
+
+		for {
+			activities, err := q.client.Activities.GetLoggedInAthleteActivities(params, client.BearerToken(token.AccessToken))
+			if err != nil {
+				warnings = append(warnings, err)
+				break
+			}
+			if len(activities.Payload) == 0 {
+				break
+			}
+			allActivities = append(allActivities, activities.Payload...)
+			page++
 		}
-		if len(activities.Payload) == 0 {
-			break
-		}
-		allActivities = append(allActivities, activities.Payload...)
-		page++
 	}
 	sort.Slice(allActivities, func(i, j int) bool {
 		a := time.Time(allActivities[i].StartDate)

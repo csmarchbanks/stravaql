@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"net/http"
 	"os"
 	"path"
@@ -61,7 +60,7 @@ func oauthToken() oauth2.TokenSource {
 
 	credDir := ".stravaql"
 	credFile := path.Join(credDir, "token.json")
-	bytes, err := ioutil.ReadFile(credFile)
+	bytes, err := os.ReadFile(credFile)
 	if err == nil {
 		token := &oauth2.Token{}
 		err = json.Unmarshal(bytes, token)
@@ -115,7 +114,11 @@ func oauthToken() oauth2.TokenSource {
 		close(ch)
 	})
 
-	defer server.Shutdown(context.Background())
+	defer func() {
+		if err := server.Shutdown(context.Background()); err != http.ErrServerClosed {
+			fmt.Printf("Error shutting down oauth server :%+v\n", err)
+		}
+	}()
 	go func() {
 		if err := server.ListenAndServe(); err != http.ErrServerClosed {
 			fmt.Printf("Error with oauth server: %+v\n", err)
